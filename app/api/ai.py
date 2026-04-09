@@ -11,9 +11,16 @@ from app.api.auth import get_current_user
 from app.models.focus_session import FocusSession
 from app.models.task import Task
 
+# ✅ CSV IMPORTS
+from app.utils.dataset import load_dataset
+from app.utils.search import search_data
+
 router = APIRouter()
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# ✅ LOAD DATASET ONCE
+DATA = load_dataset()
 
 
 # ---------------- DATABASE ----------------
@@ -26,6 +33,10 @@ def get_db():
         db.close()
 
 
+# ==============================
+# MAIN AI CHAT ENDPOINT
+# ==============================
+
 @router.post("/ai-chat")
 async def ai_chat(
     data: dict,
@@ -35,7 +46,23 @@ async def ai_chat(
 
     message = data.get("message", "").strip().lower()
 
-    # ---------------- WEEKLY FOCUS ----------------
+    # ==============================
+    # 🔍 SEARCH CSV DATASET
+    # ==============================
+
+    results = search_data(message, DATA)
+    context = "\n\n".join(results)
+
+    print("USER:", message)
+    print("SEARCH RESULTS:", results)
+
+    # ❗ If nothing found
+    if not results:
+        return {"reply": "Not in dataset"}
+
+    # ==============================
+    # 📊 USER ANALYTICS
+    # ==============================
 
     today = datetime.utcnow()
     week_ago = today - timedelta(days=7)
@@ -46,15 +73,12 @@ async def ai_chat(
         FocusSession.completed_at != None
     ).all()
 
-    total_minutes = 0
-
-    for s in sessions:
-        duration = (s.completed_at - s.started_at).total_seconds() / 60
-        total_minutes += duration
+    total_minutes = sum(
+        (s.completed_at - s.started_at).total_seconds() / 60
+        for s in sessions
+    )
 
     weekly_hours = round(total_minutes / 60, 2)
-
-    # ---------------- TASK COMPLETION ----------------
 
     tasks = db.query(Task).filter(Task.user_id == user.id).all()
 
@@ -67,24 +91,27 @@ async def ai_chat(
 
     stress_score = user.stress_score or 0
 
-
     # ==============================
-    # SCHEDULE / PLAN REQUEST
+    # 📅 PLAN / SCHEDULE GENERATION
     # ==============================
 
     if "schedule" in message or "plan" in message:
 
         prompt = f"""
-Create a study schedule based on the user's request.
+You are a study planner AI.
+
+STRICT RULES:
+- Use ONLY the dataset provided
+- Do NOT use outside knowledge
+- If data is insufficient, respond: "Not in dataset"
+
+DATA:
+{context}
 
 User request:
 {message}
 
-Rules:
-- Detect the subject from the request.
-- Create tasks ONLY related to that subject.
-- Do NOT always use math examples.
-- Each day must have a different task.
+Create a 3-day study plan.
 
 Return ONLY JSON:
 
@@ -96,38 +123,39 @@ Return ONLY JSON:
 """
 
         try:
-
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
-                    {"role": "system", "content": "You are an AI study planner."},
+                    {"role": "system", "content": "You are a strict study planner."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=200
+                max_tokens=300
             )
 
             text = response.choices[0].message.content.strip()
-
             print("AI RAW RESPONSE:", text)
 
             json_match = re.search(r"\[.*?\]", text, re.S)
 
             if not json_match:
-                return {"reply": "I couldn't generate a schedule. Please try again."}
+                return {"reply": "I couldn't generate a schedule."}
 
             plan = json.loads(json_match.group())
 
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"AI parsing failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"AI error: {str(e)}")
 
         if not plan:
-            return {"reply": "AI did not generate any tasks."}
+            return {"reply": "No tasks generated."}
 
         created_tasks = []
-        subject = message.split("for")[-1].strip() if "for" in message else "General Study"
+
+        subject = (
+            message.split("for")[-1].strip()
+            if "for" in message else "Study"
+        )
 
         for item in plan:
-
             task = Task(
                 user_id=user.id,
                 subject=subject,
@@ -143,41 +171,48 @@ Return ONLY JSON:
         db.commit()
 
         return {
-            "reply": f"I created {len(created_tasks)} study tasks for you!"
+            "reply": f"I created {len(created_tasks)} tasks using your dataset!"
         }
 
-
     # ==============================
-    # NORMAL STUDY ADVICE
+    # 💡 NORMAL STUDY ADVICE
     # ==============================
 
     prompt = f"""
-User message: {message}
+You are a study coach AI.
 
-User study data:
-Weekly focus hours: {weekly_hours}
-Completion rate: {completion_rate}
-Stress score: {stress_score}
+STRICT RULES:
+- Answer ONLY using the dataset
+- If answer not found, say: "Not in dataset"
 
-Give short study advice (1–2 sentences).
+DATA:
+{context}
+
+User message:
+{message}
+
+User stats:
+- Weekly focus hours: {weekly_hours}
+- Completion rate: {completion_rate}
+- Stress score: {stress_score}
+
+Give a short helpful answer (1–2 sentences).
 """
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are an AI study coach in a productivity app."
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        max_tokens=60,
-        temperature=0.7
-    )
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a helpful study assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=80,
+            temperature=0.7
+        )
 
-    reply = response.choices[0].message.content.strip()
+        reply = response.choices[0].message.content.strip()
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     return {"reply": reply}

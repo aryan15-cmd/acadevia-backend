@@ -1,14 +1,44 @@
-def search_data(query: str, data: list, top_k: int = 5):
-    query = query.lower().split()
+def normalize_query(query: str):
+    """Handle common abbreviations"""
+    query = query.lower()
+
+    replacements = {
+        "ml": "machine learning",
+        "ai": "artificial intelligence",
+        "dl": "deep learning",
+        "dbms": "database management system"
+    }
+
+    for k, v in replacements.items():
+        query = query.replace(k, v)
+
+    return query
+
+
+def search_data(query: str, data: list, top_k: int = 3):
+    # 🔥 normalize query
+    query = normalize_query(query)
+    query_words = query.split()
 
     scored = []
 
     for row in data:
-        score = sum(1 for word in query if word in row)
-        scored.append((row, score))
+        score = 0
 
-    # sort by relevance
+        for word in query_words:
+            if word in row:
+                score += 1
+
+        # ✅ only keep relevant rows
+        if score > 0:
+            scored.append((row, score))
+
+    # ❌ if nothing found
+    if not scored:
+        return []
+
+    # ✅ sort by relevance
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    # return only top rows
-    return [row for row, score in scored[:top_k]]
+    # ✅ return only rows (top_k reduced for token saving)
+    return [row for row, _ in scored[:top_k]]
