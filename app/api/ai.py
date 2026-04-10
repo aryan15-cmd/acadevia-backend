@@ -33,6 +33,24 @@ def get_db():
         db.close()
 
 
+# 🔥 CLEAN TASK FUNCTION (NEW)
+def clean_task(text):
+    text = text.lower()
+
+    remove_words = [
+        "watch video lectures on",
+        "introduction to",
+        "practice",
+        "learn",
+        "study"
+    ]
+
+    for word in remove_words:
+        text = text.replace(word, "")
+
+    return text.strip().capitalize()
+
+
 # ==============================
 # MAIN AI CHAT ENDPOINT
 # ==============================
@@ -56,7 +74,6 @@ async def ai_chat(
     print("USER:", message)
     print("SEARCH RESULTS:", results)
 
-    # ❗ If nothing found
     if not results:
         return {"reply": "Not in dataset"}
 
@@ -81,7 +98,6 @@ async def ai_chat(
     weekly_hours = round(total_minutes / 60, 2)
 
     tasks = db.query(Task).filter(Task.user_id == user.id).all()
-
     completed_tasks = len([t for t in tasks if t.is_completed])
 
     completion_rate = (
@@ -98,12 +114,12 @@ async def ai_chat(
     if "schedule" in message or "plan" in message:
 
         prompt = f"""
-You are a study planner AI.
+You are a STRICT study planner.
 
-STRICT RULES:
-- Use ONLY the dataset provided
-- Do NOT use outside knowledge
-- If data is insufficient, respond: "Not in dataset"
+ABSOLUTE RULES:
+- Use ONLY the DATA provided
+- DO NOT add any new information
+- If not found, say EXACTLY: Not in dataset
 
 DATA:
 {context}
@@ -111,14 +127,17 @@ DATA:
 User request:
 {message}
 
-Create a 3-day study plan.
+TASK RULES:
+- Tasks must be SHORT (max 10 words)
+- Use words from DATA only
+- No explanation
 
 Return ONLY JSON:
 
 [
-{{"day":1,"task":"...","hours":2}},
-{{"day":2,"task":"...","hours":2}},
-{{"day":3,"task":"...","hours":2}}
+{{"day":1,"task":"...","hours":1,"difficulty":"easy"}},
+{{"day":2,"task":"...","hours":2,"difficulty":"medium"}},
+{{"day":3,"task":"...","hours":3,"difficulty":"hard"}}
 ]
 """
 
@@ -126,10 +145,10 @@ Return ONLY JSON:
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
-                    {"role": "system", "content": "You are a strict study planner."},
+                    {"role": "system", "content": "You are a strict planner."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=300
+                max_tokens=250
             )
 
             text = response.choices[0].message.content.strip()
@@ -143,10 +162,7 @@ Return ONLY JSON:
             plan = json.loads(json_match.group())
 
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"AI error: {str(e)}")
-
-        if not plan:
-            return {"reply": "No tasks generated."}
+            raise HTTPException(status_code=500, detail=str(e))
 
         created_tasks = []
 
@@ -156,12 +172,22 @@ Return ONLY JSON:
         )
 
         for item in plan:
+
+            difficulty_map = {
+                "easy": 1,
+                "medium": 2,
+                "hard": 3
+            }
+
+            difficulty_text = item.get("difficulty", "medium").lower()
+            difficulty = difficulty_map.get(difficulty_text, 2)
+
             task = Task(
                 user_id=user.id,
                 subject=subject,
-                description=item.get("task"),
+                description=clean_task(item.get("task", "Study")),
                 estimated_hours=item.get("hours", 2),
-                difficulty=2,
+                difficulty=difficulty,
                 due_date=datetime.utcnow() + timedelta(days=item.get("day", 1))
             )
 
@@ -171,7 +197,16 @@ Return ONLY JSON:
         db.commit()
 
         return {
-            "reply": f"I created {len(created_tasks)} tasks using your dataset!"
+            "reply": "Your personalized study plan is ready 📚",
+            "tasks": [
+                {
+                    "day": item.get("day"),
+                    "task": clean_task(item.get("task")),
+                    "hours": item.get("hours"),
+                    "difficulty": item.get("difficulty")
+                }
+                for item in plan
+            ]
         }
 
     # ==============================
@@ -179,11 +214,11 @@ Return ONLY JSON:
     # ==============================
 
     prompt = f"""
-You are a study coach AI.
+You are a study coach.
 
 STRICT RULES:
-- Answer ONLY using the dataset
-- If answer not found, say: "Not in dataset"
+- Answer ONLY using DATA
+- If not found, say: Not in dataset
 
 DATA:
 {context}
@@ -192,22 +227,21 @@ User message:
 {message}
 
 User stats:
-- Weekly focus hours: {weekly_hours}
-- Completion rate: {completion_rate}
-- Stress score: {stress_score}
+Weekly hours: {weekly_hours}
+Completion rate: {completion_rate}
+Stress: {stress_score}
 
-Give a short helpful answer (1–2 sentences).
+Give short answer (1–2 sentences).
 """
 
     try:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a helpful study assistant."},
+                {"role": "system", "content": "You are a study assistant."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=80,
-            temperature=0.7
+            max_tokens=60
         )
 
         reply = response.choices[0].message.content.strip()
