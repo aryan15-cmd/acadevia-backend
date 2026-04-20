@@ -37,14 +37,17 @@ def compress_context(rows):
     return "\n".join(r[:100] for r in rows)
 
 
-# ---------------- SAFE JSON PARSER ----------------
+# ---------------- STRONG JSON PARSER ----------------
 def extract_json(text):
     try:
         return json.loads(text)
     except:
-        match = re.search(r"\[.*\]", text, re.S)
+        match = re.search(r"\[[\s\S]*\]", text)  # more robust
         if match:
-            return json.loads(match.group())
+            try:
+                return json.loads(match.group())
+            except:
+                return None
         return None
 
 
@@ -100,7 +103,7 @@ async def ai_plan(
         print("QUERY:", query)
         print("CONTEXT:", context)
 
-        # ---------------- PROMPT ----------------
+        # ---------------- STRONG PROMPT ----------------
         prompt = f"""
 Create a {days}-day study plan.
 
@@ -112,21 +115,23 @@ Daily hours: {hours}
 
 Rules:
 - One task per day
-- Task must be specific (real topic name)
 - Max 5 words per task
-- Do NOT use words like: study, learn, practice
-- Use standard academic topic names
-- Example: CPU Scheduling, Deadlock Prevention, Paging
+- Use clear academic topic names
+- Do NOT include explanations
+- Output ONLY pure JSON (no text before or after)
 
-Return JSON:
-[{{"day":1,"task":"","hours":2}}]
+Format:
+[{{"day":1,"task":"CPU Scheduling","hours":2}}]
 """
 
         # ---------------- AI CALL ----------------
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You generate clean study plans."},
+                {
+                    "role": "system",
+                    "content": "Return ONLY valid JSON array. No explanation."
+                },
                 {"role": "user", "content": prompt}
             ],
             max_tokens=120,
@@ -153,7 +158,6 @@ Return JSON:
         try:
             task_text = clean_task(item.get("task", ""))
 
-            # fallback if AI gives bad title
             if len(task_text) < 3:
                 task_text = f"{exam} Topic {i+1}"
 
