@@ -94,8 +94,10 @@ Daily hours: {hours}
 
 Rules:
 - One task per day
-- Keep tasks short (max 6 words)
-- Progress from easy to hard
+- Task must be specific (real topic name)
+- Max 5 words per task
+- Do NOT use words like: study, learn, practice
+- Example: CPU Scheduling, Deadlock Prevention, Paging
 
 Return JSON:
 [{{"day":1,"task":"","hours":2}}]
