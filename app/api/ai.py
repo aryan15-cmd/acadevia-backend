@@ -12,10 +12,8 @@ from app.models.focus_session import FocusSession
 from app.models.task import Task
 
 from app.utils.dataset import load_dataset
-from app.utils.search import search_data
 
 router = APIRouter()
-
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # ✅ Load dataset once
@@ -32,7 +30,31 @@ def get_db():
         db.close()
 
 
-# 🔥 CLEAN TASK FUNCTION
+# ---------------- SEARCH (IMPROVED) ----------------
+
+def search_data(query, data, top_k=3):
+    query_words = query.lower().split()
+    scored = []
+
+    for item in data:
+        text = item.lower()
+        score = sum(1 for word in query_words if word in text)
+
+        if score > 0:
+            scored.append((score, item))
+
+    scored.sort(reverse=True)
+    return [item for _, item in scored[:top_k]]
+
+
+# ---------------- CONTEXT COMPRESS ----------------
+
+def compress_context(results):
+    return "\n".join(r[:120] for r in results)
+
+
+# ---------------- CLEAN TASK ----------------
+
 def clean_task(text):
     if not text:
         return ""
@@ -64,49 +86,19 @@ async def ai_chat(
     user=Depends(get_current_user)
 ):
 
-    # ✅ Safe input
     message = str(data.get("message", "")).strip().lower()
 
-    # 🔍 SEARCH CSV
+    # 🔍 SEARCH (IMPROVED)
     results = search_data(message, DATA, top_k=3)
-    context = "\n\n".join(results)
+
+    # ✅ Fallback if no dataset match
+    if not results:
+        context = message
+    else:
+        context = compress_context(results)
 
     print("USER:", message)
-    print("RESULTS:", results)
-
-    if not results:
-        return {"reply": "Not in dataset"}
-
-    # ==============================
-    # 📊 USER ANALYTICS
-    # ==============================
-
-    today = datetime.utcnow()
-    week_ago = today - timedelta(days=7)
-
-    sessions = db.query(FocusSession).filter(
-        FocusSession.user_id == user.id,
-        FocusSession.started_at >= week_ago,
-        FocusSession.completed_at != None
-    ).all()
-
-    total_minutes = sum(
-        (s.completed_at - s.started_at).total_seconds() / 60
-        for s in sessions
-    )
-
-    weekly_hours = round(total_minutes / 60, 2)
-
-    tasks = db.query(Task).filter(Task.user_id == user.id).all()
-
-    completed_tasks = len([t for t in tasks if t.is_completed]) if tasks else 0
-
-    completion_rate = (
-        round((completed_tasks / len(tasks)) * 100, 2)
-        if tasks else 0
-    )
-
-    stress_score = user.stress_score or 0
+    print("CONTEXT:", context)
 
     # ==============================
     # 📅 PLAN GENERATION
@@ -115,42 +107,27 @@ async def ai_chat(
     if "schedule" in message or "plan" in message:
 
         prompt = f"""
-You are a STRICT study planner.
+Make a simple 3-day study plan.
 
-RULES:
-- Use ONLY the DATA
-- No extra knowledge
-- If not found: Not in dataset
-
-DATA:
+Context:
 {context}
 
-User:
-{message}
+User: {message}
 
-TASK RULES:
-- Short tasks (max 10 words)
-- Use dataset words only
-
-Return JSON:
-
-[
-{{"day":1,"task":"...","hours":1,"difficulty":"easy"}},
-{{"day":2,"task":"...","hours":2,"difficulty":"medium"}},
-{{"day":3,"task":"...","hours":3,"difficulty":"hard"}}
-]
+Return ONLY JSON:
+[{{"day":1,"task":"","hours":1,"difficulty":"easy"}}]
 """
 
         try:
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
-                    {"role": "system", "content": "Strict planner"},
+                    {"role": "system", "content": "You create short study plans."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=250,
-                temperature=0.2,
-                timeout=10
+                max_tokens=120,   # ✅ reduced
+                temperature=0.3,
+                timeout=8
             )
 
             text = response.choices[0].message.content.strip()
@@ -170,8 +147,7 @@ Return JSON:
             return {"reply": "AI request failed"}
 
         # ✅ Limit tasks
-        if len(plan) > 10:
-            plan = plan[:5]
+        plan = plan[:5]
 
         created_tasks = []
 
@@ -190,16 +166,12 @@ Return JSON:
                 "hard": 3
             }
 
-            difficulty = difficulty_map.get(
-                str(item.get("difficulty", "medium")).lower(), 2
-            )
-
             task = Task(
                 user_id=user.id,
                 subject=subject,
                 description=task_text,
                 estimated_hours=int(item.get("hours", 2)),
-                difficulty=difficulty,
+                difficulty=difficulty_map.get(item.get("difficulty", "medium"), 2),
                 due_date=datetime.utcnow() + timedelta(days=int(item.get("day", 1)))
             )
 
@@ -226,26 +198,23 @@ Return JSON:
     # ==============================
 
     prompt = f"""
-Answer using ONLY DATA.
+Answer briefly (1-2 lines).
 
-DATA:
+Context:
 {context}
 
-User:
-{message}
-
-Short answer (1–2 lines).
+User: {message}
 """
 
     try:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Study assistant"},
+                {"role": "system", "content": "Helpful study assistant"},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=60,
-            timeout=10
+            timeout=8
         )
 
         reply = response.choices[0].message.content.strip()
