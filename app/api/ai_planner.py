@@ -34,7 +34,7 @@ def get_db():
 
 # ---------------- CONTEXT COMPRESS ----------------
 def compress_context(rows):
-    return "\n".join(r[:100] for r in rows)  # limit tokens
+    return "\n".join(r[:100] for r in rows)
 
 
 # ---------------- SAFE JSON PARSER ----------------
@@ -46,6 +46,24 @@ def extract_json(text):
         if match:
             return json.loads(match.group())
         return None
+
+
+# ---------------- CLEAN TASK ----------------
+def clean_task(text):
+    if not text:
+        return ""
+
+    text = text.lower()
+
+    remove_words = [
+        "study", "learn", "practice",
+        "understand", "topic", "concept"
+    ]
+
+    for word in remove_words:
+        text = text.replace(word, "")
+
+    return text.strip().title()
 
 
 # ==============================
@@ -77,12 +95,12 @@ async def ai_plan(
         if relevant_rows:
             context = compress_context(relevant_rows)
         else:
-            context = query  # fallback → AI still works
+            context = query  # fallback
 
         print("QUERY:", query)
         print("CONTEXT:", context)
 
-        # ---------------- PROMPT (OPTIMIZED) ----------------
+        # ---------------- PROMPT ----------------
         prompt = f"""
 Create a {days}-day study plan.
 
@@ -97,6 +115,7 @@ Rules:
 - Task must be specific (real topic name)
 - Max 5 words per task
 - Do NOT use words like: study, learn, practice
+- Use standard academic topic names
 - Example: CPU Scheduling, Deadlock Prevention, Paging
 
 Return JSON:
@@ -110,8 +129,8 @@ Return JSON:
                 {"role": "system", "content": "You generate clean study plans."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=120,      # ✅ reduced tokens
-            temperature=0.3,     # balanced creativity
+            max_tokens=120,
+            temperature=0.3,
             timeout=8
         )
 
@@ -130,12 +149,18 @@ Return JSON:
     # ---------------- SAVE TASKS ----------------
     created_tasks = []
 
-    for i, item in enumerate(plan[:days]):  # limit to requested days
+    for i, item in enumerate(plan[:days]):
         try:
+            task_text = clean_task(item.get("task", ""))
+
+            # fallback if AI gives bad title
+            if len(task_text) < 3:
+                task_text = f"{exam} Topic {i+1}"
+
             task = Task(
                 user_id=user.id,
                 subject=exam,
-                description=str(item.get("task", f"Study Day {i+1}")),
+                description=task_text,
                 estimated_hours=int(item.get("hours", hours)),
                 difficulty=2,
                 due_date=datetime.utcnow() + timedelta(days=i + 1)
@@ -153,5 +178,5 @@ Return JSON:
     return {
         "message": "AI study plan created successfully 📚",
         "tasks_created": len(created_tasks),
-        "preview": plan[:days]   # optional: helps frontend
+        "preview": plan[:days]
     }
