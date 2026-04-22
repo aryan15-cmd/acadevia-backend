@@ -17,7 +17,7 @@ router = APIRouter(tags=["Authentication"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
-# ---------------- DATABASE DEPENDENCY ----------------
+#  DATABASE DEPENDENCY
 def get_db():
     db = SessionLocal()
     try:
@@ -26,7 +26,7 @@ def get_db():
         db.close()
 
 
-# ---------------- REGISTER ----------------
+# REGISTER 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register(user: UserCreate, db: Session = Depends(get_db)):
 
@@ -53,7 +53,7 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     return {"message": "User created successfully"}
 
 
-# ---------------- LOGIN ----------------
+#  LOGIN 
 @router.post("/login")
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -79,7 +79,7 @@ def login(
     }
 
 
-# ---------------- GET CURRENT USER (Dependency) ----------------
+#  GET CURRENT USER (Dependency) 
 def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
@@ -113,7 +113,7 @@ def get_current_user(
     return user
 
 
-# ---------------- GET PROFILE (/me) ----------------
+# GET PROFILE (/me)
 @router.get("/me")
 def read_current_user(current_user: User = Depends(get_current_user)):
 

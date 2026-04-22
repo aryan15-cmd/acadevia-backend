@@ -18,7 +18,7 @@ import subprocess
 router = APIRouter()
 
 
-# ---------------- DATABASE DEPENDENCY ----------------
+# - DATABASE DEPENDENCY --
 def get_db():
     db = SessionLocal()
     try:

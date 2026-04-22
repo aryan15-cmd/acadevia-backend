@@ -42,7 +42,7 @@ def create_task(
     db.commit()
     db.refresh(new_task)
 
-    # ✅ Return full created task instead of message
+    # Return full created task instead of message
     return new_task
 
 

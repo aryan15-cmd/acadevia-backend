@@ -21,7 +21,6 @@ DATA = load_dataset()
 
 
 # ---------------- DATABASE ----------------
-
 def get_db():
     db = SessionLocal()
     try:
@@ -30,31 +29,32 @@ def get_db():
         db.close()
 
 
-# ---------------- SEARCH (IMPROVED) ----------------
-
+# ---------------- SEARCH (UPDATED) ----------------
 def search_data(query, data, top_k=3):
     query_words = query.lower().split()
     scored = []
 
-    for item in data:
-        text = item.lower()
+    for row in data:
+        text = f"{row.get('subject','')} {row.get('topic','')} {row.get('details','')}".lower()
+
         score = sum(1 for word in query_words if word in text)
 
         if score > 0:
-            scored.append((score, item))
+            scored.append((row, score))
 
-    scored.sort(reverse=True)
-    return [item for _, item in scored[:top_k]]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [row for row, _ in scored[:top_k]]
 
 
 # ---------------- CONTEXT COMPRESS ----------------
-
 def compress_context(results):
-    return "\n".join(r[:120] for r in results)
+    return "\n".join(
+        f"{r.get('subject','')} - {r.get('topic','')} ({r.get('time',2)}h)"
+        for r in results
+    )
 
 
 # ---------------- CLEAN TASK ----------------
-
 def clean_task(text):
     if not text:
         return ""
@@ -72,13 +72,24 @@ def clean_task(text):
     for word in remove_words:
         text = text.replace(word, "")
 
-    return text.strip().capitalize()
+    return text.strip().title()
+
+
+# ---------------- CSV TOPIC FETCH ----------------
+def get_topics_from_csv(query, days):
+    query = query.lower()
+
+    filtered = [
+        row for row in DATA
+        if any(word in row.get("subject", "") for word in query.split())
+    ]
+
+    return filtered[:days]
 
 
 # ==============================
 # MAIN AI CHAT ENDPOINT
 # ==============================
-
 @router.post("/ai-chat")
 async def ai_chat(
     data: dict,
@@ -88,26 +99,51 @@ async def ai_chat(
 
     message = str(data.get("message", "")).strip().lower()
 
-    # 🔍 SEARCH (IMPROVED)
-    results = search_data(message, DATA, top_k=3)
-
-    # ✅ Fallback if no dataset match
-    if not results:
-        context = message
-    else:
-        context = compress_context(results)
-
     print("USER:", message)
-    print("CONTEXT:", context)
 
     # ==============================
-    # 📅 PLAN GENERATION
+    # 📅 PLAN GENERATION (CSV FIRST)
     # ==============================
-
     if "schedule" in message or "plan" in message:
 
-        prompt = f"""
-Make a simple 3-day study plan.
+        days = 3  # default
+        match = re.search(r"\d+", message)
+        if match:
+            days = int(match.group())
+
+        # 🔥 CSV FIRST
+        csv_topics = get_topics_from_csv(message, days)
+
+        # ==============================
+        # ✅ USE CSV DATA
+        # ==============================
+        if csv_topics:
+            print("Using CSV data")
+
+            plan = [
+                {
+                    "day": i + 1,
+                    "task": row["topic"],
+                    "hours": row.get("time", 2)
+                }
+                for i, row in enumerate(csv_topics)
+            ]
+
+        # ==============================
+        # 🤖 AI FALLBACK
+        # ==============================
+        else:
+            print("Using AI fallback")
+
+            results = search_data(message, DATA, top_k=3)
+
+            if results:
+                context = compress_context(results)
+            else:
+                context = message
+
+            prompt = f"""
+Make a {days}-day study plan.
 
 Context:
 {context}
@@ -115,64 +151,59 @@ Context:
 User: {message}
 
 Return ONLY JSON:
-[{{"day":1,"task":"","hours":1,"difficulty":"easy"}}]
+[{{"day":1,"task":"","hours":2}}]
 """
 
-        try:
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": "You create short study plans."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=120,   # ✅ reduced
-                temperature=0.3,
-                timeout=8
-            )
-
-            text = response.choices[0].message.content.strip()
-            print("AI:", text)
-
-            json_match = re.search(r"\[.*?\]", text, re.S)
-
-            if not json_match:
-                return {"reply": "AI format error"}
-
             try:
+                response = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content": "Return only JSON"},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=120,
+                    temperature=0.3,
+                    timeout=8
+                )
+
+                text = response.choices[0].message.content.strip()
+
+                json_match = re.search(r"\[.*?\]", text, re.S)
+
+                if not json_match:
+                    return {"reply": "AI format error"}
+
                 plan = json.loads(json_match.group())
+
             except:
-                return {"reply": "AI parsing error"}
+                return {"reply": "AI request failed"}
 
-        except:
-            return {"reply": "AI request failed"}
-
-        # ✅ Limit tasks
-        plan = plan[:5]
-
+        # ==============================
+        # 💾 SAVE TASKS
+        # ==============================
         created_tasks = []
 
         subject = message.split("for")[-1].strip() if "for" in message else "Study"
 
-        for item in plan:
+        for i, item in enumerate(plan[:days]):
 
             task_text = clean_task(item.get("task", ""))
 
             if not task_text:
                 continue
 
-            difficulty_map = {
-                "easy": 1,
-                "medium": 2,
-                "hard": 3
-            }
+            hours = int(item.get("hours", 2))
+
+            # 🔥 YOUR REQUIRED FORMAT
+            description = f"Study {task_text} for {hours} hour{'s' if hours > 1 else ''} today"
 
             task = Task(
                 user_id=user.id,
                 subject=subject,
-                description=task_text,
-                estimated_hours=int(item.get("hours", 2)),
-                difficulty=difficulty_map.get(item.get("difficulty", "medium"), 2),
-                due_date=datetime.utcnow() + timedelta(days=int(item.get("day", 1)))
+                description=description,
+                estimated_hours=hours,
+                difficulty=2,
+                due_date=datetime.utcnow() + timedelta(days=i + 1)
             )
 
             db.add(task)
@@ -185,17 +216,22 @@ Return ONLY JSON:
             "tasks": [
                 {
                     "day": item.get("day"),
-                    "task": clean_task(item.get("task", "")),
-                    "hours": item.get("hours"),
-                    "difficulty": item.get("difficulty")
+                    "task": item.get("task"),
+                    "hours": item.get("hours")
                 }
-                for item in plan if item.get("task")
+                for item in plan[:days]
             ]
         }
 
     # ==============================
-    # 💡 NORMAL RESPONSE
+    # 💡 NORMAL CHAT
     # ==============================
+    results = search_data(message, DATA, top_k=3)
+
+    if results:
+        context = compress_context(results)
+    else:
+        context = message
 
     prompt = f"""
 Answer briefly (1-2 lines).

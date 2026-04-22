@@ -1,13 +1,11 @@
 import csv
 import os
 
-DATA = None  # ✅ cache once
-
+DATA = None
 
 def load_dataset():
     global DATA
 
-    # ✅ Prevent reloading (IMPORTANT)
     if DATA is not None:
         return DATA
 
@@ -25,14 +23,18 @@ def load_dataset():
             topic = row.get("Chapter/Topics", "").strip()
             details = row.get("Details", "").strip()
             time = row.get("Estimated Time", "").strip()
+            semester = row.get("Semester", "").strip()
 
-            # ❌ skip empty rows
-            if not (subject or topic or details):
+            #  skip empty rows
+            if not (subject or topic):
                 continue
 
-            # 🔥 ULTRA COMPACT FORMAT (token optimized)
-            compact = f"{subject}|{topic}|{details}|{time}".lower()
-
-            DATA.append(compact)
+            DATA.append({
+                "subject": subject.lower(),
+                "topic": topic,
+                "details": details,
+                "time": int(time) if time.isdigit() else 2,
+                "semester": semester
+            })
 
     return DATA
